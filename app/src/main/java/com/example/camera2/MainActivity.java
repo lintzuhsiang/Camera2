@@ -29,6 +29,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+
 import com.vuzix.hud.actionmenu.ActionMenuActivity;
 
 
@@ -120,7 +121,6 @@ public class MainActivity extends ActionMenuActivity {
     }
 
 
-
     // Working variables.
     short[] recordingBuffer = new short[RECORDING_LENGTH];
     int recordingOffset = 0;
@@ -152,32 +152,80 @@ public class MainActivity extends ActionMenuActivity {
     private TextureView mTextureView;
     private MediaRecorder recorder;
     private Surface recorderSurface;
-    //  private CaptureRequest.Builder previewRequestBuilder;
     private CameraCaptureSession recordCaptureSession;
     protected CameraCaptureSession previewCaptureSession;
+    private CameraCaptureSession mCaptureSession;
     protected CameraDevice cameraDevice;
     protected CaptureRequest.Builder captureRequestBuilder;
-    //    private boolean mstartRecording = true;
     private Handler mBackgroundHandler;
     private HandlerThread mBackgroundThread;
     private Button photo_btn;
     private Button video_btn;
+    private Button sensor_btn;
     private ImageView redDot;
-
+    float maxZoom;
+    int minWidth;
+    int minHeight;
+    int difWidth;
+    int difHeight;
     private boolean mIsRecording = false;
-    private float gyroScope_y;
-
+    private boolean mIsSensoring = false;
     //sensor
     private SensorManager sensorManager;
     private SensorEventListener sensorEventListener = new SensorEventListener() {
+
+        private float minGyro = -5;
+        private float maxGyro = 5;
+        private float newminGyro = 0;
+        private float newmaxGyro = 5;
+        private float ratio = (newmaxGyro - newminGyro) / (maxGyro - minGyro);
+
         @Override
         public void onSensorChanged(SensorEvent event) {
-            switch(event.sensor.getStringType()){
-                case Sensor.STRING_TYPE_GYROSCOPE:
-//                    gyroScope_y = event.values[2];
-                    mOnHeadListener.onChanged((event.values[2]));
-            }
+            if (event.values != null) {
+                switch (event.sensor.getStringType()) {
+                    case Sensor.STRING_TYPE_GYROSCOPE:
+//                        Log.d(TAG, "gyroscope x "+ String.valueOf(100*event.values[0]));
+//                        Log.d(TAG, "gyroscope y "+ String.valueOf(100*event.values[1]));
 //
+//                        Log.d(TAG, "gyroscope z "+ String.valueOf(100*event.values[2]));
+
+                        //                        mOnHeadListener.onChanged(event.values[2]);
+                        float zoomNorm = newminGyro + ratio * (event.values[0] - minGyro);  //range (0,5)
+                        float zoomLevel = zoomNorm * (mTextureView.getHeight() / maxZoom / 5);  //range (0,120)
+//                        int cropWidth = difWidth /((int)(50 * zoomLevel)+1);
+//                        int cropHeight = difHeight /((int)(50 * zoomLevel)+1);
+//                        int cropWidth = (int) (2*zoomLevel);
+//                        int cropHeight = (int) (2*zoomLevel);
+
+//                        Log.d(TAG, "TextureView width "+String.valueOf(mTextureView.getWidth()));
+//                        Log.d(TAG, "TextureView height "+String.valueOf(mTextureView.getHeight()));
+//                        Log.d(TAG, "maxzoom "+String.valueOf(maxZoom));
+//                        Log.d(TAG, "zoomNorm "+String.valueOf(zoomNorm));
+//
+//                        Log.d(TAG, "zoomLevel "+String.valueOf(zoomLevel));
+//                        Log.d(TAG, "minWidth "+String.valueOf(minWidth));
+//                        Log.d(TAG, "minHeight "+String.valueOf(minHeight));
+//                        Log.d(TAG, "difWidth "+String.valueOf(difWidth));
+//                        Log.d(TAG, "difHeight "+String.valueOf(difHeight));
+//
+                        int cropHeight = 0;
+                        int cropWidth = 0;
+
+//                        Log.d(TAG, "cropWidth "+String.valueOf(cropWidth));
+//                        Log.d(TAG, "cropHeight "+String.valueOf(cropHeight));
+//                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
+                        Rect zoom = new Rect(-100, -100, mTextureView.getWidth() + 100, mTextureView.getHeight() + 100);
+
+//                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
+                        try {
+                            updatePreview(zoom);
+                        } catch (CameraAccessException e) {
+                            e.printStackTrace();
+                        }
+
+                }
+            }
         }
 
         @Override
@@ -185,6 +233,8 @@ public class MainActivity extends ActionMenuActivity {
 
         }
     };
+
+//    private static AccelerometerListener listener;
 
     /**
      * Memory-map the model file in Assets.
@@ -199,6 +249,7 @@ public class MainActivity extends ActionMenuActivity {
         mTextureView = findViewById(R.id.textureView);
         video_btn = findViewById(R.id.video_button);
         photo_btn = findViewById(R.id.camera_button);
+        sensor_btn = findViewById(R.id.sensor_button);
         redDot = findViewById(R.id.red_dot);
         int imageResource = getResources().getIdentifier("@drawable/reddot", "drawable", getPackageName());
         redDot.setImageResource(imageResource);
@@ -223,30 +274,34 @@ public class MainActivity extends ActionMenuActivity {
                     mIsRecording = false;
                     redDot.setVisibility(View.INVISIBLE);
                     stopRecord();
-//                    recorder.stop();
-//                    recorder.reset();
-                    stopSensor();
-                    startPreview();
-
                 } else {
                     Log.d(TAG, "start record");
                     redDot.setVisibility(View.VISIBLE);
                     mIsRecording = true;
                     startRecord();
-                    startSensor();
                     recorder.start();
                 }
             }
         });
-//        try {
-//            HeadMovement();
-//        } catch (CameraAccessException e) {
-//            e.printStackTrace();
-//        }
+        sensor_btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (mIsSensoring) {
+                    mIsSensoring = false;
+                    stopPreview();
+                    stopSensor();
+                } else {
+                    mIsSensoring = true;
+                    startPreview();
+                    startSensor();
+                }
+            }
+        });
+//
     }
 
-    // Set up an object to smooth recognition results to increase accuracy.
 
+    // Set up an object to smooth recognition results to increase accuracy.
 
     private void requestMicrophonePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -354,7 +409,7 @@ public class MainActivity extends ActionMenuActivity {
     }
 
     private void stopBackgroundThread() {
-        if(backgroundHandlerThread !=null) {
+        if (backgroundHandlerThread != null) {
             backgroundHandlerThread.quitSafely();
         }
         try {
@@ -397,7 +452,7 @@ public class MainActivity extends ActionMenuActivity {
                 startRecord();
                 recorder.start();
             } else {
-                startPreview();
+//                startPreview();
             }
         }
 
@@ -414,6 +469,72 @@ public class MainActivity extends ActionMenuActivity {
 
         }
     };
+    protected void startPreview() {
+        mTextureView.setAlpha((float) 1.0);
+
+        if (!mIsRecording) {
+            try {
+                SurfaceTexture surfaceTexture = mTextureView.getSurfaceTexture();
+
+                assert surfaceTexture != null;
+                surfaceTexture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
+
+                Surface previewSurface = new Surface(surfaceTexture);
+//                    Surface recorderSurface = recorder.getSurface();
+
+                captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                captureRequestBuilder.addTarget(previewSurface);
+
+//
+
+                cameraDevice.createCaptureSession(Arrays.asList(previewSurface, imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
+                    @Override
+                    public void onConfigured(@NonNull CameraCaptureSession Session) {
+                        if (null == cameraDevice) {
+                            return;
+                        }
+//                        previewCaptureSession = Session;
+                        mCaptureSession = Session;
+
+//                        try {
+////                            previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+//                            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+//                        } catch (CameraAccessException e) {
+//                            e.printStackTrace();
+//                        }
+                    }
+
+                    @Override
+                    public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
+                        Log.d(TAG, "unable to turn on preview");
+                    }
+                }, null);
+//                    }
+
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void updatePreview(Rect zoom) throws CameraAccessException {
+        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, zoom);
+//        previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+        mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+    }
+
+    private void stopPreview() {
+        mTextureView.setAlpha((float) 0);
+
+        if (!mIsRecording) {
+            try {
+//            previewCaptureSession.stopRepeating();
+                mCaptureSession.stopRepeating();
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
+        }
+    }
 
     private void startStillCapture() {
         if (null == cameraDevice) {
@@ -421,6 +542,12 @@ public class MainActivity extends ActionMenuActivity {
             Log.e(LOG_TAG, "cameraDevice is null");
         }
         try {
+            if (mIsSensoring) {
+                stopSensor();
+                stopPreview();
+                mIsSensoring = false;
+                mTextureView.setAlpha((float) 0);
+            }
 //        float maxzoom = (characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)) * 10;
 //        Size[] jpegSizes = null;
 //        if (characteristics != null) {
@@ -437,7 +564,9 @@ public class MainActivity extends ActionMenuActivity {
             } else {
                 captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             }
-
+//            if(mIsSensoring){
+//                mCaptureSession.stopRepeating();
+//            }
             List<Surface> outputSurfaces = new ArrayList<Surface>(2);
 
             outputSurfaces.add(imageReader.getSurface());
@@ -507,20 +636,153 @@ public class MainActivity extends ActionMenuActivity {
                 public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
 
                     super.onCaptureCompleted(session, request, result);
+//                    if(mIsSensoring){
+//                        Log.d(TAG,"in stillcapture capture callback listener");
+//                        updatePreview();
+//                    }
+//                    Log.d(TAG,"isSensoring ==false and  stillcapture capture callback listener");
+
                     //create file name
+                }
+
+                @Override
+                public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure t) {
+                    super.onCaptureFailed(s, r, t);
+
+                    Log.d(TAG, "failed in capture callback");
+
                 }
             };
 
-            if(mIsRecording){
-                recordCaptureSession.capture(captureRequestBuilder.build(),captureListener,null);
-            }else{
-                previewCaptureSession.capture(captureRequestBuilder.build(),captureListener,null);
-            }
+            cameraDevice.createCaptureSession(Arrays.asList(imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(@NonNull CameraCaptureSession Session) {
+                    if (null == cameraDevice) {
+                        return;
+                    }
+                    mCaptureSession = Session;
+                    try {
+                        mCaptureSession.capture(captureRequestBuilder.build(), captureListener, mBackgroundHandler);
+                    } catch (CameraAccessException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                @Override
+                public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
+                    Log.d(TAG, "unable to turn on preview");
+                }
+            }, null);
+
 
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
 
+    }
+
+    private void setUpRecord() {
+        if (recorder == null) {
+            recorder = new MediaRecorder();
+        }
+        recorder.setAudioSource(MediaRecorder.AudioSource.DEFAULT);
+        recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+
+        CamcorderProfile cpHigh = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
+        recorder.setProfile(cpHigh);
+        String fileName = getFilePath();
+        recorder.setOutputFile(fileName + ".3gp");
+
+        try {
+            recorder.prepare();
+            Log.d(TAG, "recorder prepared");
+        } catch (IOException e) {
+        }
+    }
+
+    private void startRecord() {
+        try {
+            setUpRecord();
+//            mTextureView.setAlpha((float) 0);
+            if (mIsSensoring) {
+                stopSensor();
+                stopPreview();
+                mIsSensoring = false;
+            }
+            SurfaceTexture texture = mTextureView.getSurfaceTexture();
+            assert texture != null;
+            texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
+            Surface previewSurface = new Surface(texture);
+            Surface recorderSurface = recorder.getSurface();
+
+            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            captureRequestBuilder.addTarget(previewSurface);
+            captureRequestBuilder.addTarget(recorderSurface);
+
+
+            //surfaces can be replaced as recorderSurface if don't want preview
+            cameraDevice.createCaptureSession(Arrays.asList(previewSurface, recorderSurface, imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
+                //            cameraDevice.createCaptureSession(Arrays.asList(recorderSurface,imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(CameraCaptureSession cameraCaptureSession) {
+//                        recordCaptureSession = cameraCaptureSession;
+                    mCaptureSession = cameraCaptureSession;
+                    try {
+//                            recordCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+                        mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+                    } catch (CameraAccessException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                @Override
+                public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
+                }
+            }, null);//cameraHandler
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private void stopRecord() {
+        if (mIsSensoring) {
+            mIsSensoring = false;
+            stopSensor();
+        }
+        mTextureView.setAlpha((float) 0);   //setAlpha 0 equals to invisible
+//            if (cameraDevice != null && recordCaptureSession != null) {
+        if (cameraDevice != null && mCaptureSession != null) {
+            try {
+//                  recordCaptureSession.stopRepeating();
+                mCaptureSession.stopRepeating();
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
+        }
+        Timer timer = new Timer();
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                if (null != recorder) {
+                    recorder.stop();
+                    recorder.reset();    // set state to idle
+//                        recorder.release();
+                    recorder = null;
+                }
+            }
+        };
+        timer.schedule(timerTask, 100);
+
+    }
+
+
+    private void updatePreview() {
+        try {
+            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
     }
 
     //setup camera
@@ -530,6 +792,21 @@ public class MainActivity extends ActionMenuActivity {
             cameraId = manager.getCameraIdList()[0];
             CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
             Log.d("Camera", String.valueOf(characteristics.getAvailableCaptureRequestKeys()));
+
+            //set for preview use
+            maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+            minWidth = (int) (mTextureView.getWidth() / maxZoom);
+            minHeight = (int) (mTextureView.getHeight() / maxZoom);
+            difWidth = mTextureView.getWidth() - minWidth;
+            difHeight = mTextureView.getHeight() - minHeight;
+            Log.d(TAG, "TextureView width " + String.valueOf(mTextureView.getWidth()));
+            Log.d(TAG, "TextureView height " + String.valueOf(mTextureView.getHeight()));
+            Log.d(TAG, "maxzoom " + String.valueOf(maxZoom));
+            Log.d(TAG, "minWidth " + String.valueOf(minWidth));
+            Log.d(TAG, "minHeight " + String.valueOf(minHeight));
+            Log.d(TAG, "difWidth " + String.valueOf(difWidth));
+            Log.d(TAG, "difHeight " + String.valueOf(difHeight));
+            Log.d(TAG, "Open Camera complete");
 
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             assert map != null;
@@ -569,244 +846,85 @@ public class MainActivity extends ActionMenuActivity {
                     requestPermissions(new String[]{android.Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO
                     }, REQUEST_CAMERA_PERMISSION_RESULT);
                 }
-            }catch (CameraAccessException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-        private void closeCamera () {
-            if (null != cameraDevice) {
-                cameraDevice.close();
-                cameraDevice = null;
-            }
-            if (null != recorder) {
-                recorder.release();
-                recorder = null;
-            }
-        }
-        private boolean isExternalStorageWritable () {
-
-            return Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState());
-
-        }
-
-
-        private void setUpRecord () {
-            if (recorder == null) {
-                recorder = new MediaRecorder();
-            }
-            recorder.setAudioSource(MediaRecorder.AudioSource.DEFAULT);
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-
-            CamcorderProfile cpHigh = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
-            recorder.setProfile(cpHigh);
-            String fileName = getFilePath();
-            recorder.setOutputFile(fileName + ".3gp");
-
-            try {
-                recorder.prepare();
-                Log.d(TAG, "recorder prepared");
-            } catch (IOException e) {
-            }
-        }
-
-        private void startRecord () {
-            try {
-                setUpRecord();
-                SurfaceTexture texture = mTextureView.getSurfaceTexture();
-                assert texture != null;
-                texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
-                Surface previewSurface = new Surface(texture);
-                Surface recorderSurface = recorder.getSurface();
-
-                captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                captureRequestBuilder.addTarget(previewSurface);
-                captureRequestBuilder.addTarget(recorderSurface);
-
-
-                //surfaces can be replaced as recorderSurface if don't want preview
-                cameraDevice.createCaptureSession(Arrays.asList(previewSurface,recorderSurface,imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
-                    //cameraDevice.createCaptureSession(recorderSurface, new CameraCaptureSession.StateCallback() {
-                    @Override
-                    public void onConfigured(CameraCaptureSession cameraCaptureSession) {
-                        recordCaptureSession = cameraCaptureSession;
-                        try {
-                            recordCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
-                        } catch (CameraAccessException e) {
-                            e.printStackTrace();
-                        }
-                    }
-
-                    @Override
-                    public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
-                    }
-                }, null);//cameraHandler
-            } catch (CameraAccessException e) {
-                e.printStackTrace();
-            }
-
-        }
-
-
-        private void stopRecord () {
-
-//            if (cameraDevice != null && cameraCaptureSessions != null) {
-//              try {
-//                  cameraCaptureSessions.stopRepeating();
-//              } catch (CameraAccessException e) {
-//                e.printStackTrace();
-//              }
-//            }
-            Timer timer = new Timer();
-            TimerTask timerTask = new TimerTask() {
-                @Override
-                public void run() {
-                    if (null != recorder) {
-                        recorder.stop();
-                        recorder.reset();    // set state to idle
-                        recorder.release();
-                        recorder = null;
-                    }
-                }
-            };
-            timer.schedule(timerTask, 100);
-
-        }
-
-    float maxZoom = 10;
-    float minZoom = 0;
-    float maxGyro = 10;
-    float minGyro = -10;
-    float valuerange(float value){
-        return  (value-minGyro)/(maxGyro-minGyro)*(maxZoom-minZoom);
-    }
-
-    public interface onHeadListener<T>{
-        void onChanged(float result);
-    }
-
-    static public onHeadListener mOnHeadListener;
-
-
-    private void setHeadMovement(onHeadListener listener){
-       mOnHeadListener = listener;
-    };
-
-    float zoomLevel;
-
-
-    private void HeadMovement() throws CameraAccessException {
-        setHeadMovement(new onHeadListener() {
-            @Override
-            public void onChanged(float result) {
-                zoomLevel = result;
-            }
-        });
-        Log.d(TAG, "zoom"+String.valueOf(zoomLevel));
-
-
-        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-        CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-        float maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)*10;
-        int minWidth = (int) (mTextureView.getWidth() / maxZoom);
-        int minHeight = (int) (mTextureView.getHeight() / maxZoom);
-        int difWidth = mTextureView.getWidth() - minWidth;
-        int difHeight = mTextureView.getHeight() - minHeight;
-        int cropWidth = difWidth /100 *(int)zoomLevel;
-        int cropHeight = difHeight /100 *(int)zoomLevel;
-        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
-
-        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION,zoom);
-        previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(),null,mBackgroundHandler);
-
-    }
-
-    protected void startPreview () {
-            try {
-
-                SurfaceTexture surfaceTexture = mTextureView.getSurfaceTexture();
-                assert surfaceTexture != null;
-                surfaceTexture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
-
-                Surface previewSurface = new Surface(surfaceTexture);
-
-                captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                captureRequestBuilder.addTarget(previewSurface);
-//                captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION,zoom);
-
-                cameraDevice.createCaptureSession(Arrays.asList(previewSurface,imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
-                    @Override
-                    public void onConfigured(@NonNull CameraCaptureSession Session) {
-                        if (null == cameraDevice) {
-                            return;
-                        }
-                        previewCaptureSession = Session;
-                        try {
-                            previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-                        } catch (CameraAccessException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    @Override
-                    public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
-                        Log.d(TAG,"unable to turn on preview");
-                    }
-                }, null);
             } catch (CameraAccessException e) {
                 e.printStackTrace();
             }
         }
-
-        private String getFilePath () {
-            fileName = getExternalFilesDir(Environment.DIRECTORY_PICTURES).getAbsolutePath() + "/" + formatter.format(new Date());
-            Log.i(TAG, "path " + fileName);
-            return fileName;
-        }
-        private static Size chooseOptimalSize(Size[] choices,int width, int height){
-            List<Size> bigEnough = new ArrayList<Size>();
-            for (Size option:choices){
-                if(option.getHeight() == option.getWidth()*height/width && option.getWidth() >= width && option.getHeight()>=height){
-                    bigEnough.add(option);
-                }
-            }
-            if(bigEnough.size() > 0){
-                return Collections.min(bigEnough, new CompareSizeByArea());
-            }else{
-                return choices[0];
-            }
-        }
-         private static class CompareSizeByArea implements Comparator<Size> {
-
-            @Override
-            public int compare(Size lhs, Size rhs) {
-            return Long.signum( (long)(lhs.getWidth() * lhs.getHeight()) - (long)(rhs.getWidth() * rhs.getHeight()));
-            }
-        }
-
-    private void startSensor(){
-        sensorManager.registerListener(sensorEventListener,sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),SensorManager.SENSOR_DELAY_NORMAL);
-        sensorManager.registerListener(sensorEventListener,sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),SensorManager.SENSOR_DELAY_NORMAL);
     }
-    private void stopSensor(){
+
+    private void closeCamera() {
+        if (null != cameraDevice) {
+            cameraDevice.close();
+            cameraDevice = null;
+        }
+        if (null != recorder) {
+            recorder.release();
+            recorder = null;
+        }
+    }
+
+    private void startSensor() {
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER), SensorManager.SENSOR_DELAY_NORMAL);
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE), SensorManager.SENSOR_DELAY_NORMAL);
+    }
+
+    private void stopSensor() {
         sensorManager.unregisterListener(sensorEventListener);
 
     }
+
+
+    private String getFilePath() {
+        fileName = getExternalFilesDir(Environment.DIRECTORY_PICTURES).getAbsolutePath() + "/" + formatter.format(new Date());
+        Log.i(TAG, "path " + fileName);
+        return fileName;
+    }
+
+    private boolean isExternalStorageWritable() {
+
+        return Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState());
+
+    }
+
+    private static Size chooseOptimalSize(Size[] choices, int width, int height) {
+        List<Size> bigEnough = new ArrayList<Size>();
+        for (Size option : choices) {
+            if (option.getHeight() == option.getWidth() * height / width && option.getWidth() >= width && option.getHeight() >= height) {
+                bigEnough.add(option);
+            }
+        }
+        if (bigEnough.size() > 0) {
+            return Collections.min(bigEnough, new CompareSizeByArea());
+        } else {
+            return choices[0];
+        }
+    }
+
+    private static class CompareSizeByArea implements Comparator<Size> {
+
+        @Override
+        public int compare(Size lhs, Size rhs) {
+            return Long.signum((long) (lhs.getWidth() * lhs.getHeight()) - (long) (rhs.getWidth() * rhs.getHeight()));
+        }
+    }
+
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if(requestCode == REQUEST_CAMERA_PERMISSION_RESULT) {
-            if(grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+        if (requestCode == REQUEST_CAMERA_PERMISSION_RESULT) {
+            if (grantResults[0] != PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(getApplicationContext(),
                         "Application will not run without camera services", Toast.LENGTH_SHORT).show();
             }
-            if(grantResults[1] != PackageManager.PERMISSION_GRANTED) {
+            if (grantResults[1] != PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(getApplicationContext(),
                         "Application will not have audio on record", Toast.LENGTH_SHORT).show();
             }
         }
-        if(requestCode == REQUEST_WRITE_EXTERNAL_STORAGE_PERMISSION_RESULT) {
-            if(grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                if(mIsRecording) {
+        if (requestCode == REQUEST_WRITE_EXTERNAL_STORAGE_PERMISSION_RESULT) {
+            if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (mIsRecording) {
                     mIsRecording = true;
 //                    mRecordImageButton.setImageResource(R.mipmap.btn_video_busy);
                 }
@@ -818,31 +936,26 @@ public class MainActivity extends ActionMenuActivity {
             }
         }
     }
-        @Override
-        protected void onResume () {
-            super.onResume();
-            startBackgroundThread();
 
-            if (mTextureView.isAvailable()) {
-                Log.d(TAG, "onResuem textureView is Available");
-                openCamera();
-            } else {
-                mTextureView.setSurfaceTextureListener(textureListener);
-            }
-        }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        startBackgroundThread();
 
-        @Override
-        protected void onStop () {
-            closeCamera();
-            stopSensor();
-            stopBackgroundThread();
-            super.onStop();
-        }
-        @Override
-        protected void onPause(){
-            closeCamera();
-            stopSensor();
-            stopBackgroundThread();
-            super.onPause();
+        if (mTextureView.isAvailable()) {
+            Log.d(TAG, "onResuem textureView is Available");
+            openCamera();
+        } else {
+            mTextureView.setSurfaceTextureListener(textureListener);
         }
     }
+
+
+    @Override
+    protected void onPause() {
+        closeCamera();
+        stopSensor();
+        stopBackgroundThread();
+        super.onPause();
+    }
+}
