@@ -1,0 +1,12 @@
+<component name="libraryTable">
+  <library name="Gradle: com.vuzix:hud-resources:1.0@aar">
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/transforms-2/files-2.1/d2c601a35a635e74522493bc159dad65/hud-resources-1.0/jars/classes.jar!/" />
+      <root url="file://$USER_HOME$/.gradle/caches/transforms-2/files-2.1/d2c601a35a635e74522493bc159dad65/hud-resources-1.0/res" />
+    </CLASSES>
+    <JAVADOC>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.vuzix/hud-resources/1.0/df4a7f5b7ccbf50f9256b83351a18668bea004fa/hud-resources-1.0-javadoc.jar!/" />
+    </JAVADOC>
+    <SOURCES />
+  </library>
+</component>
