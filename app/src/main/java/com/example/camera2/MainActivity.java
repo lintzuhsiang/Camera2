@@ -39,9 +39,11 @@ import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Size;
 import android.util.SparseIntArray;
+import android.view.Display;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.Button;
@@ -136,6 +138,7 @@ public class MainActivity extends ActionMenuActivity {
 
     private HandlerThread backgroundHandlerThread;
     private Handler backgroundHandler;
+   ;
     //camera
     private String cameraId;
     //  private final ImageReader.OnImageAvailableListener mOnImageAvailableListener = new ImageReader.OnImageAvailableListener() {
@@ -151,14 +154,14 @@ public class MainActivity extends ActionMenuActivity {
     private File file;
     private TextureView mTextureView;
     private MediaRecorder recorder;
+    private AudioRecord record;
     private Surface recorderSurface;
     private CameraCaptureSession recordCaptureSession;
     protected CameraCaptureSession previewCaptureSession;
     private CameraCaptureSession mCaptureSession;
     protected CameraDevice cameraDevice;
     protected CaptureRequest.Builder captureRequestBuilder;
-    private Handler mBackgroundHandler;
-    private HandlerThread mBackgroundThread;
+
     private Button photo_btn;
     private Button video_btn;
     private Button sensor_btn;
@@ -168,6 +171,7 @@ public class MainActivity extends ActionMenuActivity {
     int minHeight;
     int difWidth;
     int difHeight;
+//    private RecordWaveTask recordTask = null;
     private boolean mIsRecording = false;
     private boolean mIsSensoring = false;
     //sensor
@@ -214,8 +218,10 @@ public class MainActivity extends ActionMenuActivity {
 
 //                        Log.d(TAG, "cropWidth "+String.valueOf(cropWidth));
 //                        Log.d(TAG, "cropHeight "+String.valueOf(cropHeight));
+                        Log.d(TAG,"image dimension: "+imageDimension.getWidth()+"   "+imageDimension.getHeight());
+
 //                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
-                        Rect zoom = new Rect(-100, -100, mTextureView.getWidth() + 100, mTextureView.getHeight() + 100);
+                        Rect zoom = new Rect(0, 0, 480 + 0, 480 + 0);
 
 //                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
                         try {
@@ -298,6 +304,33 @@ public class MainActivity extends ActionMenuActivity {
             }
         });
 //
+
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(dm);
+
+        System.out.println("width-display :"  + dm.widthPixels);
+        System.out.println("heigth-display :"  + dm.heightPixels);
+        System.out.println("xdpi :"  + dm.xdpi);
+        System.out.println("ydpi :"  + dm.ydpi);
+
+        System.out.println("density :"  + dm.density);
+        System.out.println("densityDpi :"  + dm.densityDpi);
+        System.out.println("heightPixels :"  + dm.heightPixels);
+        System.out.println("widthPixels :"  + dm.widthPixels);
+
+
+
+
+// 通過Resources獲取
+        DisplayMetrics dm2 = getResources().getDisplayMetrics();
+        System.out.println("width-display :" +   dm2.widthPixels);
+        System.out.println("heigth-display :" +  dm2.heightPixels);
+        System.out.println("xdpi :"  + dm2.xdpi);
+        System.out.println("ydpi :"  + dm2.ydpi);
+// 獲取螢幕的預設解析度
+        Display display = getWindowManager().getDefaultDisplay();
+        System.out.println("width-display :"  + display.getWidth());
+        System.out.println("heigth-display :"  + display.getHeight());
     }
 
 
@@ -518,9 +551,9 @@ public class MainActivity extends ActionMenuActivity {
     }
 
     private void updatePreview(Rect zoom) throws CameraAccessException {
-        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, zoom);
+//        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, zoom);
 //        previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-        mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+        mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
     }
 
     private void stopPreview() {
@@ -628,7 +661,7 @@ public class MainActivity extends ActionMenuActivity {
                 }
             };
 
-            imageReader.setOnImageAvailableListener(readerListener, mBackgroundHandler);
+            imageReader.setOnImageAvailableListener(readerListener, backgroundHandler);
 
 
             final CameraCaptureSession.CaptureCallback captureListener = new CameraCaptureSession.CaptureCallback() {
@@ -662,7 +695,7 @@ public class MainActivity extends ActionMenuActivity {
                     }
                     mCaptureSession = Session;
                     try {
-                        mCaptureSession.capture(captureRequestBuilder.build(), captureListener, mBackgroundHandler);
+                        mCaptureSession.capture(captureRequestBuilder.build(), captureListener, backgroundHandler);
                     } catch (CameraAccessException e) {
                         e.printStackTrace();
                     }
@@ -685,13 +718,39 @@ public class MainActivity extends ActionMenuActivity {
         if (recorder == null) {
             recorder = new MediaRecorder();
         }
-        recorder.setAudioSource(MediaRecorder.AudioSource.DEFAULT);
-        recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
 
-        CamcorderProfile cpHigh = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
-        recorder.setProfile(cpHigh);
+
+//        recorder.setAudioSource(MediaRecorder.AudioSource.DEFAULT);
+        recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+//
+        CamcorderProfile profile = CamcorderProfile.get(Integer.parseInt(cameraId), CamcorderProfile.QUALITY_HIGH);
+        recorder.setOutputFormat(profile.fileFormat);
+        recorder.setVideoEncoder(profile.videoCodec);
+        recorder.setVideoEncodingBitRate(profile.videoBitRate);
+        recorder.setVideoFrameRate(profile.videoFrameRate);
+        recorder.setVideoSize(profile.videoFrameWidth, profile.videoFrameHeight);
+
+//        CamcorderProfile cpHigh = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
+//        recorder.setProfile(cpHigh);
         String fileName = getFilePath();
         recorder.setOutputFile(fileName + ".3gp");
+
+
+        int bufferSize =
+                AudioRecord.getMinBufferSize(
+                        SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            bufferSize = SAMPLE_RATE * 2;
+        }
+
+       record = new AudioRecord(
+                        MediaRecorder.AudioSource.DEFAULT,
+                        SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        bufferSize);
+
+
 
         try {
             recorder.prepare();
@@ -703,6 +762,16 @@ public class MainActivity extends ActionMenuActivity {
     private void startRecord() {
         try {
             setUpRecord();
+            record.startRecording();
+            int bufferSize =
+                    AudioRecord.getMinBufferSize(
+                            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+                bufferSize = SAMPLE_RATE * 2;
+            }
+            short[] audioBuffer = new short[bufferSize / 2];
+            int numberRead = record.read(audioBuffer, 0, audioBuffer.length);
+            Log.d("Audio", String.valueOf(numberRead));
 //            mTextureView.setAlpha((float) 0);
             if (mIsSensoring) {
                 stopSensor();
@@ -756,6 +825,8 @@ public class MainActivity extends ActionMenuActivity {
             try {
 //                  recordCaptureSession.stopRepeating();
                 mCaptureSession.stopRepeating();
+                record.stop();
+                record.release();
             } catch (CameraAccessException e) {
                 e.printStackTrace();
             }
@@ -779,7 +850,7 @@ public class MainActivity extends ActionMenuActivity {
 
     private void updatePreview() {
         try {
-            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -813,7 +884,7 @@ public class MainActivity extends ActionMenuActivity {
 
             imageDimension = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class), mTextureView.getWidth(), mTextureView.getHeight());
             imageReader = ImageReader.newInstance(imageDimension.getWidth(), imageDimension.getHeight(), ImageFormat.JPEG, 1);
-
+            Log.d(TAG,"image dimension: "+imageDimension.getWidth()+"   "+imageDimension.getHeight());
             // Add permission for camera and let user grant the permission
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED &&
                     ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -838,7 +909,7 @@ public class MainActivity extends ActionMenuActivity {
             try {
                 if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) ==
                         PackageManager.PERMISSION_GRANTED) {
-                    cameraManager.openCamera(cameraId, stateCallback, mBackgroundHandler);
+                    cameraManager.openCamera(cameraId, stateCallback, backgroundHandler);
                 } else {
                     if (shouldShowRequestPermissionRationale(android.Manifest.permission.CAMERA)) {
                         Toast.makeText(this, "Video app required access to camera", Toast.LENGTH_SHORT).show();
