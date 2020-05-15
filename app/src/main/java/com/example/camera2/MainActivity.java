@@ -3,7 +3,14 @@ package com.example.camera2;
 
 import android.Manifest;
 import android.app.Activity;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothServerSocket;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
 import android.content.res.AssetManager;
@@ -17,16 +24,21 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.hardware.camera2.params.RecommendedStreamConfigurationMap;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.CamcorderProfile;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
+import android.media.MediaMuxer.OutputFormat;
 import android.media.MediaRecorder;
+import android.media.MediaRecorder.AudioEncoder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -37,6 +49,7 @@ import com.vuzix.hud.actionmenu.ActionMenuActivity;
 
 
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.app.ActivityCompat;
@@ -49,11 +62,14 @@ import android.util.SparseIntArray;
 import android.view.Display;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.TextView;
 
 //import com.google.android.material.bottomsheet.BottomSheetBehavior;
@@ -71,9 +87,11 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -82,8 +100,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -98,18 +118,14 @@ import android.widget.Toast;
  * An activity that listens for audio and then uses a TensorFlow model to detect particular classes,
  * by default a small set of action words.
  */
-public class MainActivity extends ActionMenuActivity {
+public class MainActivity extends ActionMenuActivity implements AdapterView.OnItemClickListener{
 //        implements View.OnClickListener, CompoundButton.OnCheckedChangeListener {
 
     // Constants that control the behavior of the recognition code and model
     // settings. See the audio recognition tutorial for a detailed explanation of
     // all these, but you should customize them to match your training settings if
     // you are running your own model.
-    private static final int SAMPLE_RATE = 48000;
-    private static final int SAMPLE_DURATION_MS = 1000;
-    private static final int RECORDER_BPP = 16;
 
-    private static final int RECORDING_LENGTH = (int) (SAMPLE_RATE * SAMPLE_DURATION_MS / 1000);
 
     private static final String LOG_TAG = "Thesis";
     private static final String TAG = "Thesis";
@@ -133,7 +149,6 @@ public class MainActivity extends ActionMenuActivity {
 
 
     // Working variables.
-    byte[] recordingBuffer = new byte[RECORDING_LENGTH];
     int recordingOffset = 0;
     boolean shouldContinue = true;
     boolean shouldContinueRecognition = true;
@@ -150,12 +165,7 @@ public class MainActivity extends ActionMenuActivity {
    ;
     //camera
     private String cameraId;
-    //  private final ImageReader.OnImageAvailableListener mOnImageAvailableListener = new ImageReader.OnImageAvailableListener() {
-//    @Override
-//    public void onImageAvailable(ImageReader imageReader) {
-//      backgroundHandler.post(new ImageSaver(imageReader.acquireLatestImage()))
-//    }
-//  };
+
     private Size imageDimension;
     private Bitmap storedBitmap;
     private ImageReader imageReader;
@@ -181,25 +191,42 @@ public class MainActivity extends ActionMenuActivity {
     private int minHeight;
     private int difWidth;
     private int difHeight;
+    private Rect cRect;
+    private int mBottom;
+    private int mRight;
 //    private RecordWaveTask recordTask = null;
     private boolean mIsRecording = false;
     private boolean mIsSensoring = false;
     private final ReentrantLock recordingBufferLock = new ReentrantLock();
-
+    private static long timestamp = System.currentTimeMillis();
     //sensor
     private SensorManager sensorManager;
+    private Rect zoom = new Rect(0,0,0,0);
     private SensorEventListener sensorEventListener = new SensorEventListener() {
 
-        private float minGyro = -5;
-        private float maxGyro = 5;
-        private float newminGyro = 0;
-        private float newmaxGyro = 5;
-        private float ratio = (newmaxGyro - newminGyro) / (maxGyro - minGyro);
-
+        private float min = (float) (-1 * Math.PI) * 180;
+        private float max = (float) Math.PI * 180 ;
+        private float newmin = (float) (-1 * Math.PI/3) * 180;
+        private float newmax = (float) (Math.PI/3) * 180;
+        float mGravity[];
+        float mGeomagetic[];
+        float orient_z;
+        boolean headup;
         @Override
         public void onSensorChanged(SensorEvent event) {
             if (event.values != null) {
                 switch (event.sensor.getStringType()) {
+                    case Sensor.STRING_TYPE_ACCELEROMETER:
+                        mGravity = event.values;
+                        if(event.values[2] > 0){
+                            headup = false;
+                        }else{
+                            headup = true;
+                        }
+
+                    case Sensor.STRING_TYPE_MAGNETIC_FIELD:
+                        mGeomagetic = event.values;
+
                     case Sensor.STRING_TYPE_GYROSCOPE:
 //                        Log.d(TAG, "gyroscope x "+ String.valueOf(100*event.values[0]));
 //                        Log.d(TAG, "gyroscope y "+ String.valueOf(100*event.values[1]));
@@ -207,8 +234,9 @@ public class MainActivity extends ActionMenuActivity {
 //                        Log.d(TAG, "gyroscope z "+ String.valueOf(100*event.values[2]));
 
                         //                        mOnHeadListener.onChanged(event.values[2]);
-                        float zoomNorm = newminGyro + ratio * (event.values[0] - minGyro);  //range (0,5)
-                        float zoomLevel = zoomNorm * (mTextureView.getHeight() / maxZoom / 5);  //range (0,120)
+//                        float zoomNorm = newminGyro + ratio * (event.values[0] - minGyro);  //range (0,5)
+//                        float zoomLevel = zoomNorm * (mTextureView.getHeight() / maxZoom / 5);  //range (0,120)
+//                        Log.d(TAG, String.valueOf(zoomLevel));
 //                        int cropWidth = difWidth /((int)(50 * zoomLevel)+1);
 //                        int cropHeight = difHeight /((int)(50 * zoomLevel)+1);
 //                        int cropWidth = (int) (2*zoomLevel);
@@ -230,18 +258,48 @@ public class MainActivity extends ActionMenuActivity {
 
 //                        Log.d(TAG, "cropWidth "+String.valueOf(cropWidth));
 //                        Log.d(TAG, "cropHeight "+String.valueOf(cropHeight));
-                        Log.d(TAG,"image dimension: "+imageDimension.getWidth()+"   "+imageDimension.getHeight());
+//                        Log.d(TAG,"image dimension: "+imageDimension.getWidth()+"   "+imageDimension.getHeight());
+//                        Log.d(TAG,"TextureView dimension: "+mTextureView.getWidth()+"   "+mTextureView.getHeight());
 
 //                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
-                        Rect zoom = new Rect(0, 0, 480 + 0, 480 + 0);
 
 //                        Rect zoom = new Rect(cropWidth, cropHeight, mTextureView.getWidth() - cropWidth, mTextureView.getHeight() - cropHeight);
-                        try {
-                            updatePreview(zoom);
-                        } catch (CameraAccessException e) {
-                            e.printStackTrace();
-                        }
+//                        try {
+//                            updatePreview(zoom);
+//                        } catch (CameraAccessException e) {
+//                            e.printStackTrace();
+//                        }
 
+                }
+                if(mGeomagetic!=null && mGravity!=null){
+                    float R[]=new float[9];
+                    float I[]=new float[9];
+                    boolean success = SensorManager.getRotationMatrix(R,I,mGravity,mGeomagetic);
+                    if (success) {
+                        float orientation[] = new float[3];
+                        SensorManager.getOrientation(R,orientation);
+                        orient_z = (float) (orientation[1] * 57.14);//+"  "+orientation[1]+"  "+orientation[2]);
+                        long d = System.currentTimeMillis() - timestamp;
+//                        Log.d(TAG,"time: " + d+  " orientation: "+orientation[0]+ "  "+ orientation[1]+"  "+orientation[2]);
+
+                    }
+                }
+
+                float zoomRatio=0;
+                float scale = 20;
+                if(headup){ //headup to zoom in   comfortable zone from -50 to -90 degree,
+                    zoomRatio = Math.min(40,(orient_z + 90)) / scale;     // 0 - 2
+                }else{    //head down to zoom out
+                    zoomRatio = -1 * Math.min(40,(orient_z + 90)) / scale;
+                }
+//                Log.d(TAG,"zoomRatio: "+zoomRatio);
+//                Log.d(TAG,"Rect: " + "0  0  "+ (int) (mRight/2 + mRight/4 * zoomRatio) +"  " + (int) (mBottom/2 + mBottom/4 * zoomRatio));
+                zoom = new Rect(0, 0, (int) (mRight/2 + mRight/4 * zoomRatio), (int) (mBottom/2 + mBottom/4 * zoomRatio));
+
+                try {
+                    updatePreview(zoom);
+                } catch (CameraAccessException e) {
+                    e.printStackTrace();
                 }
             }
         }
@@ -254,19 +312,62 @@ public class MainActivity extends ActionMenuActivity {
 
 
     private static final int SAMPLING_RATE_IN_HZ = 48000;
-
+    private static final int ENCODING = AudioFormat.ENCODING_PCM_16BIT;
+    private static final int CHANNEL = AudioFormat.CHANNEL_IN_MONO;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
 
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
-    private final AtomicBoolean recordingInProgress = new AtomicBoolean(false);
+    private static final int SAMPLE_RATE = 48000;
+    private static final int SAMPLE_DURATION_MS = 1000;
+    private static final int RECORDER_BPP = 16;
 
-//    private static AccelerometerListener listener;
+    private static final int RECORDING_LENGTH = (int) (SAMPLE_RATE * SAMPLE_DURATION_MS / 1000);
+    byte[] recordingBuffer = new byte[RECORDING_LENGTH];
+    private int bufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+
+    private String fileName_v;
+    private String fileName_a;
+    private String fileName_o;
+
 
     /**
      * Memory-map the model file in Assets.
      */
 
 
+
+    BluetoothConnectionService mBluetoothConnection;
+
+
+    private static final UUID MY_UUID_INSECURE =
+            UUID.fromString("8ce255c0-200a-11e0-ac64-0800200c9a66");
+
+    BluetoothDevice mBTDevice;
+    public ArrayList<BluetoothDevice> mBTDevices = new ArrayList<>();
+
+    public DeviceListAdapter mDeviceListAdapter;
+
+    ListView lvNewDevices;
+
+
+
+    private static int REQUEST_ENABLE_BT = 100;
+    private static int REQUEST_DISCOVERABLE_BT = 110;
+
+    BluetoothAdapter bluetoothAdapter;
+    private Set<BluetoothDevice> pairedDevices;
+    private BroadcastReceiver mReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (BluetoothDevice.ACTION_FOUND.equals(action)){
+
+            }
+        }
+    };
+
+    @RequiresApi(api = Build.VERSION_CODES.M)
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Set up the UI.
@@ -281,6 +382,8 @@ public class MainActivity extends ActionMenuActivity {
         redDot.setImageResource(imageResource);
 
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        final BluetoothManager bluetoothManager =
+                (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
 
         assert photo_btn != null;
         assert video_btn != null;
@@ -301,6 +404,8 @@ public class MainActivity extends ActionMenuActivity {
                     redDot.setVisibility(View.INVISIBLE);
                     stopRecord();
                     stopAudioRecord();
+                    fileName_o = getFilePath() + ".mp4";
+//                    combineVideo(fileName_v+".3gp",fileName_a,fileName_o);
                 } else {
                     Log.d(TAG, "start record");
                     redDot.setVisibility(View.VISIBLE);
@@ -326,6 +431,8 @@ public class MainActivity extends ActionMenuActivity {
             }
         });
 //
+
+
 
         DisplayMetrics dm = new DisplayMetrics();
         getWindowManager().getDefaultDisplay().getMetrics(dm);
@@ -356,6 +463,18 @@ public class MainActivity extends ActionMenuActivity {
     }
 
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQUEST_ENABLE_BT) {
+            if (resultCode == RESULT_OK) {
+                Log.d("bluetooth", "BLUETOOTH is ON");
+            }
+        } else if (requestCode == REQUEST_DISCOVERABLE_BT) {
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+
     // Set up an object to smooth recognition results to increase accuracy.
 
     private void requestMicrophonePermission() {
@@ -365,6 +484,66 @@ public class MainActivity extends ActionMenuActivity {
         }
     }
 
+
+    public void btnEnableDisable_Discoverable(View view) {
+        Log.d(TAG, "btnEnableDisable_Discoverable: Making device discoverable for 300 seconds.");
+
+        Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+        discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
+        startActivity(discoverableIntent);
+
+        IntentFilter intentFilter = new IntentFilter(bluetoothAdapter.ACTION_SCAN_MODE_CHANGED);
+        registerReceiver(mBroadcastReceiver2,intentFilter);
+
+    }
+
+    public void btnDiscover(View view) {
+        Log.d(TAG, "btnDiscover: Looking for unpaired devices.");
+
+        if(bluetoothAdapter.isDiscovering()){
+            bluetoothAdapter.cancelDiscovery();
+            Log.d(TAG, "btnDiscover: Canceling discovery.");
+
+            //check BT permissions in manifest
+//            checkBTPermissions();
+
+            bluetoothAdapter.startDiscovery();
+            IntentFilter discoverDevicesIntent = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+            registerReceiver(mBroadcastReceiver3, discoverDevicesIntent);
+        }
+        if(!bluetoothAdapter.isDiscovering()){
+
+            //check BT permissions in manifest
+//            checkBTPermissions();
+
+            bluetoothAdapter.startDiscovery();
+            IntentFilter discoverDevicesIntent = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+            registerReceiver(mBroadcastReceiver3, discoverDevicesIntent);
+        }
+    }
+//    @RequiresApi(api = Build.VERSION_CODES.M)
+//    private void checkBTPermissions() {
+//
+//            int permissionCheck = this.checkSelfPermission("Manifest.permission.ACCESS_FINE_LOCATION");
+//            permissionCheck += this.checkSelfPermission("Manifest.permission.ACCESS_COARSE_LOCATION");
+//            if (permissionCheck != 0) {
+//
+//                this.requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, 1001); //Any number
+//        }else{
+//            Log.d(TAG, "checkBTPermissions: No need to check permissions. SDK version < LOLLIPOP.");
+//        }
+//    }
+
+    private void startConnection(){
+        Log.d(TAG, String.valueOf(MY_UUID_INSECURE));
+        startBTConnection(mBTDevice,MY_UUID_INSECURE);
+
+    }
+    private void startBTConnection(BluetoothDevice mBTDevice,UUID uuid){
+        Log.d(TAG,"StartBTConnection");
+        Log.d(TAG, String.valueOf(uuid));
+        mBluetoothConnection.startClient(mBTDevice,uuid);
+    }
 //        @Override
 //        public void onRequestPermissionsResult (
 //        int requestCode, String[] permissions,int[] grantResults){
@@ -453,6 +632,144 @@ public class MainActivity extends ActionMenuActivity {
 //        record.stop();
 //        record.release();
 //    }
+
+    public void enableDisableBT(){
+        if(bluetoothAdapter == null){
+            Log.d(TAG, "enableDisableBT: Does not have BT capabilities.");
+        }
+        if(!bluetoothAdapter.isEnabled()){
+            Log.d(TAG, "enableDisableBT: enabling BT.");
+            Intent enableBTIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivity(enableBTIntent);
+
+            IntentFilter BTIntent = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+            registerReceiver(mBroadcastReceiver1, BTIntent);
+        }
+        if(bluetoothAdapter.isEnabled()){
+            Log.d(TAG, "enableDisableBT: disabling BT.");
+            bluetoothAdapter.disable();
+
+            IntentFilter BTIntent = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+            registerReceiver(mBroadcastReceiver1, BTIntent);
+        }
+
+    }
+
+    private final BroadcastReceiver mBroadcastReceiver1 = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            // When discovery finds a device
+            if (action.equals(bluetoothAdapter.ACTION_STATE_CHANGED)) {
+                final int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, bluetoothAdapter.ERROR);
+
+                switch(state){
+                    case BluetoothAdapter.STATE_OFF:
+                        Log.d(TAG, "onReceive: STATE OFF");
+                        break;
+                    case BluetoothAdapter.STATE_TURNING_OFF:
+                        Log.d(TAG, "mBroadcastReceiver1: STATE TURNING OFF");
+                        break;
+                    case BluetoothAdapter.STATE_ON:
+                        Log.d(TAG, "mBroadcastReceiver1: STATE ON");
+                        break;
+                    case BluetoothAdapter.STATE_TURNING_ON:
+                        Log.d(TAG, "mBroadcastReceiver1: STATE TURNING ON");
+                        break;
+                }
+            }
+        }
+    };
+
+    /**
+     * Broadcast Receiver for changes made to bluetooth states such as:
+     * 1) Discoverability mode on/off or expire.
+     */
+    private final BroadcastReceiver mBroadcastReceiver2 = new BroadcastReceiver() {
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+
+            if (action.equals(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)) {
+
+                int mode = intent.getIntExtra(BluetoothAdapter.EXTRA_SCAN_MODE, BluetoothAdapter.ERROR);
+
+                switch (mode) {
+                    //Device is in Discoverable Mode
+                    case BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE:
+                        Log.d(TAG, "mBroadcastReceiver2: Discoverability Enabled.");
+                        break;
+                    //Device not in discoverable mode
+                    case BluetoothAdapter.SCAN_MODE_CONNECTABLE:
+                        Log.d(TAG, "mBroadcastReceiver2: Discoverability Disabled. Able to receive connections.");
+                        break;
+                    case BluetoothAdapter.SCAN_MODE_NONE:
+                        Log.d(TAG, "mBroadcastReceiver2: Discoverability Disabled. Not able to receive connections.");
+                        break;
+                    case BluetoothAdapter.STATE_CONNECTING:
+                        Log.d(TAG, "mBroadcastReceiver2: Connecting....");
+                        break;
+                    case BluetoothAdapter.STATE_CONNECTED:
+                        Log.d(TAG, "mBroadcastReceiver2: Connected.");
+                        break;
+                }
+
+            }
+        }
+    };
+
+
+
+
+    /**
+     * Broadcast Receiver for listing devices that are not yet paired
+     * -Executed by btnDiscover() method.
+     */
+    private BroadcastReceiver mBroadcastReceiver3 = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+            Log.d(TAG, "onReceive: ACTION FOUND.");
+
+            if (action.equals(BluetoothDevice.ACTION_FOUND)){
+                BluetoothDevice device = intent.getParcelableExtra (BluetoothDevice.EXTRA_DEVICE);
+                mBTDevices.add(device);
+                Log.d(TAG, "onReceive: " + device.getName() + ": " + device.getAddress());
+                mDeviceListAdapter = new DeviceListAdapter(context, R.layout.device_adapter_view, mBTDevices);
+                lvNewDevices.setAdapter(mDeviceListAdapter);
+            }
+        }
+    };
+
+    /**
+     * Broadcast Receiver that detects bond state changes (Pairing status changes)
+     */
+    private final BroadcastReceiver mBroadcastReceiver4 = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+
+            if(action.equals(BluetoothDevice.ACTION_BOND_STATE_CHANGED)){
+                BluetoothDevice mDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                //3 cases:
+                //case1: bonded already
+                if (mDevice.getBondState() == BluetoothDevice.BOND_BONDED){
+                    Log.d(TAG, "BroadcastReceiver: BOND_BONDED.");
+                    //inside BroadcastReceiver4
+                    mBTDevice = mDevice;
+                }
+                //case2: creating a bone
+                if (mDevice.getBondState() == BluetoothDevice.BOND_BONDING) {
+                    Log.d(TAG, "BroadcastReceiver: BOND_BONDING.");
+                }
+                //case3: breaking a bond
+                if (mDevice.getBondState() == BluetoothDevice.BOND_NONE) {
+                    Log.d(TAG, "BroadcastReceiver: BOND_NONE.");
+                }
+            }
+        }
+    };
+
 
 
     private static final String HANDLE_THREAD_NAME = "CameraBackground";
@@ -552,9 +869,10 @@ public class MainActivity extends ActionMenuActivity {
                         mCaptureSession = Session;
 
 //                        try {
-////                            previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-//                            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-//                        } catch (CameraAccessException e) {
+//                            previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+                        updatePreview();
+//                            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+//                                                } catch (CameraAccessException e) {
 //                            e.printStackTrace();
 //                        }
                     }
@@ -572,10 +890,25 @@ public class MainActivity extends ActionMenuActivity {
         }
     }
 
-    private void updatePreview(Rect zoom) throws CameraAccessException {
-//        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, zoom);
-//        previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-        mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
+    private synchronized void updatePreview() {
+        try {
+            if(captureRequestBuilder!=null && mCaptureSession!=null) {
+//                mCaptureSession.stopRepeating();
+//                mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
+                mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, null);
+
+            }
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+    private synchronized void updatePreview(Rect zoom) throws CameraAccessException {
+        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, zoom);
+//        previewCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
+        if(mCaptureSession!=null) {
+            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
+//            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
+        };
     }
 
     private void stopPreview() {
@@ -754,7 +1087,7 @@ public class MainActivity extends ActionMenuActivity {
 
 //        CamcorderProfile cpHigh = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
 //        recorder.setProfile(cpHigh);
-        String fileName_v = getFilePath();
+        fileName_v = getFilePath();
         recorder.setOutputFile(fileName_v + ".3gp");
 
 
@@ -764,41 +1097,97 @@ public class MainActivity extends ActionMenuActivity {
         } catch (IOException e) {
         }
     }
-//
-//    private Runnable audioRunnable = new Runnable() {
-//        @Override
-//        public void run() {
-//
+
+
+
+//    private class AcceptThread extends Thread{
+//        private final BluetoothServerSocket mmServerSocket;
+//        public AcceptThread(){
+//            BluetoothServerSocket tmp = null;
+//            try{
+//                tmp = bluetoothAdapter.listenUsingInsecureRfcommWithServiceRecord()
+//            }
 //        }
+//    }
+    public void initBT() {
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        if (!bluetoothAdapter.isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+            Log.d("bluetooth","bluetooth available");
+        }else{
+            Log.d("bluetooth","bluetooth NOT available");
+
+        }
+        pairedDevices = bluetoothAdapter.getBondedDevices();
+        if (pairedDevices.size() > 0) {
+            // There are paired devices. Get the name and address of each paired device.
+            for (BluetoothDevice device : pairedDevices) {
+                String deviceName = device.getName();
+                String deviceHardwareAddress = device.getAddress(); // MAC address
+            }
+        }else{
+            Log.d("Bluetooth","no paired device");
+        }
+
+        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+        registerReceiver(mReceiver,filter);
+
+    }
+
+
+
+    private static final String MIME_TYPE = "video/avc";
+   private  MediaRecorder.AudioEncoder mAudioEncoder;
+    private static final String AUDIO_MIME_TYPE = "audio/aac";
+//    private Encoder mAudioEncoder;
+    public static final String MIMETYPE_VIDEO_AVC = "video/avc";
+    public static final String MIMETYPE_AUDIO_AAC = "audio/mp4a-latm";
+    public static final String MIMETYPE_TEXT_CEA_608 = "text/cea-608";
+
+//    private void mediaAudio(){
+//        MediaFormat format = new MediaFormat();
+//        format.setString(MediaFormat.KEY_MIME, AUDIO_MIME_TYPE);
+//        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+//        format.setInteger(MediaFormat.KEY_SAMPLE_RATE, 44100);
+//        format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
+//        format.setInteger(MediaFormat.KEY_BIT_RATE, 128000);
+//        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+//
+//        mAudioEncoder = new Base64.Encoder(AUDIO_MIME_TYPE, format, mMuxer);
+//        mAudioEncoder.getEncoder().start();
+//    }
+//    private void mediaVideo() throws IOException {
+//
+//        MediaFormat audioFormat = new MediaFormat();
+//        audioFormat.setInteger(MediaFormat.KEY_SAMPLE_RATE, 44100);
+//        audioFormat.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
+//
+//        mAudioEncoder = MediaCodec.createEncoderByType(AUDIO_MIME_TYPE);
+//        mAudioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+//        mAudioEncoder.start();
+//
+//        MediaCodec encoder = MediaCodec.createEncoderByType(MIME_TYPE);
+////        int heightRange = encoder.
+//        MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
+////            format.setInteger();
+////            audioEncoder.
+//    ByteBuffer[] inputBuffers = mAudioEncoder.get
 //    }
 
 
-    private static final int ENCODING = AudioFormat.ENCODING_PCM_16BIT;
-    private static final int CHANNEL = AudioFormat.CHANNEL_IN_MONO;
-//    FileOutputStream wavOut = null;
-//    File fileName = null;
-
 //    public synchronized void startRecording() {
-    private int bufferSize = AudioRecord.getMinBufferSize(
-                        SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+
 //
     public void startAudioRecord() {
     if (recordingThread != null) {
             return;
         }
-//        bufferSize =
-//                AudioRecord.getMinBufferSize(
-//                        SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
 
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
             bufferSize = SAMPLE_RATE * 2;
         }
         Log.d("buffer", String.valueOf(bufferSize));
-//        short[] audioBuffer = new short[bufferSize / 2];
-//        byte[] audioByteBuffer = new byte[bufferSize * 2];
-//        audioFile = getFilePath("wav");
-
-
 
         audioRecord =
                 new AudioRecord(
@@ -830,38 +1219,19 @@ public class MainActivity extends ActionMenuActivity {
         if (audioRecord == null) {
             return;
         }
-        recordingInProgress.set(false);
-//        Log.d("fileName_stopAudioRecord",fileName);
-        String finalFileName = getFilePath()+ ".wav";
-//        Log.d("fileFinalName",finalFileName);
+        fileName_a = getFilePath()+ ".wav";
 
-        copyWaveFile(fileName,finalFileName);
+        copyWaveFile(fileName,fileName_a);
 
         audioRecord.stop();
         audioRecord.release();
         audioRecord = null;
         recordingThread = null;
     }
-//
-//    private byte[] short2byte(short[] sData) {
-//        int shortArrsize = sData.length;
-//        byte[] bytes = new byte[shortArrsize * 2];
-//
-//        for (int i = 0; i < shortArrsize; i++) {
-//            bytes[i * 2] = (byte) (sData[i] & 0x00FF);
-//            bytes[(i * 2) + 1] = (byte) (sData[i] >> 8);
-//            sData[i] = 0;
-//        }
-//        return bytes;
-//
-//    }
-//
-//
+
     private void recordAudio() throws IOException {
-//
-//        short[] audioBuffer = new short[bufferSize];
+        short[] audioBuffer = new short[bufferSize/2];
         byte[] audioByteBuffer = new byte[bufferSize];
-        final ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
 
         fileName = getFilePath();
         Log.d("fileName_recordAudio",fileName);
@@ -871,7 +1241,6 @@ public class MainActivity extends ActionMenuActivity {
 
 //            int numberRead = audioRecord.read(audioBuffer, 0, bufferSize);
             int numberRead = audioRecord.read(audioByteBuffer, 0, bufferSize);
-//            int numberRead = audioRecord.read(buffer,bufferSize);
 
               recordingBufferLock.lock();
                   try {
@@ -880,26 +1249,18 @@ public class MainActivity extends ActionMenuActivity {
                     recordingBufferLock.unlock();
                   }
 
-//            try { for(int i=0;i<audioBuffer.length;i++){
-//                wavOut.write(audioBuffer[i]);
-//            }
-
-
             if(AudioRecord.ERROR_INVALID_OPERATION != numberRead){
                 try {
                     wavOut.write(recordingBuffer,0,bufferSize);
 //                    wavOut.write(audioByteBuffer,0,bufferSize);
-                    buffer.clear();
+
+//                    for(int i=0;i<audioBuffer.length;i++){
+//                            wavOut.write(audioBuffer[i]);
+//                         }
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
             }
-//            wavOut.write(bData,0,bufferSize * 2);
-//          System.arraycopy(audioBuffer, 0, recordingBuffer, recordingOffset, firstCopyLength);
-
-//            } finally {
-////                recordingBufferLock.unlock();
-//            }
 
         }
         if(wavOut!=null){
@@ -909,102 +1270,92 @@ public class MainActivity extends ActionMenuActivity {
     }
 
 
-
-//    MediaMuxer muxer = new MediaMuxer("temp.mp4", MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-//    // SetUp Video/Audio Tracks.
-//    MediaFormat audioFormat = new MediaFormat(...);
-//    MediaFormat videoFormat = new MediaFormat(...);
-//    int audioTrackIndex = muxer.addTrack(audioFormat);
-//    int videoTrackIndex = muxer.addTrack(videoFormat);
-//
-//    // Setup Metadata Track
-//    MediaFormat metadataFormat = new MediaFormat(...);
-//   metadataFormat.setString(KEY_MIME, "application/gyro");
-//    int metadataTrackIndex = muxer.addTrack(metadataFormat);
-//
-//   muxer.start();
-//   while(..) {
-//        // Allocate bytebuffer and write gyro data(x,y,z) into it.
-//        ByteBuffer metaData = ByteBuffer.allocate(bufferSize);
-//        metaData.putFloat(x);
-//        metaData.putFloat(y);
-//        metaData.putFloat(z);
-//        BufferInfo metaInfo = new BufferInfo();
-//        // Associate this metadata with the video frame by setting
-//        // the same timestamp as the video frame.
-//        metaInfo.presentationTimeUs = currentVideoTrackTimeUs;
-//        metaInfo.offset = 0;
-//        metaInfo.flags = 0;
-//        metaInfo.size = bufferSize;
-//        muxer.writeSampleData(metadataTrackIndex, metaData, metaInfo);
-//    };
-//   muxer.stop();
-//   muxer.release();
-//}
-
 //    public void combineVideo(File inputVideoFile, File inputAudioFile, File outputVideoFile) {
-//        MediaExtractor videoExtractor = new MediaExtractor();
-//        MediaExtractor audioExtractor = new MediaExtractor();
-//        MediaMuxer mediaMuxer = null;
-//        try {
-//            mediaMuxer = new MediaMuxer(outputVideoFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-//
-//            // set data source
-//            videoExtractor.setDataSource(inputVideoFile.getAbsolutePath());
-//            audioExtractor.setDataSource(inputAudioFile.getAbsolutePath());
-//
-//            // get video or audio 取出視訊或音訊的訊號
+    public void combineVideo(String inputVideoFile, String inputAudioFile, String outputVideoFile){
+        MediaExtractor videoExtractor = new MediaExtractor();
+        MediaExtractor audioExtractor = new MediaExtractor();
+        MediaMuxer mediaMuxer = null;
+        Log.d(TAG,inputVideoFile);
+        Log.d(TAG,inputAudioFile);
+        Log.d(TAG,outputVideoFile);
+        try {
+            mediaMuxer = new MediaMuxer(new File(outputVideoFile).getAbsolutePath(), OutputFormat.MUXER_OUTPUT_MPEG_4);
+
+            // set data source
+            videoExtractor.setDataSource(inputVideoFile);
+            audioExtractor.setDataSource(inputAudioFile);
+
+            // get video or audio 取出視訊或音訊的訊號
 //            int videoTrack = getTrack(videoExtractor, true);
 //            int audioTrack = getTrack(audioExtractor, false);
-//
-//            // change to video or audio track 切換道視訊或音訊訊號的通道
-//            videoExtractor.selectTrack(videoTrack);
-//            MediaFormat videoFormat = videoExtractor.getTrackFormat(videoTrack);
-//            audioExtractor.selectTrack(audioTrack);
-//            MediaFormat audioFormat = audioExtractor.getTrackFormat(audioTrack);
-//
-//            //追蹤此通道
-//            int writeVideoIndex = mediaMuxer.addTrack(videoFormat);
-//            int writeAudioIndex = mediaMuxer.addTrack(audioFormat);
-//            mediaMuxer.start();
-//
-//            // 讀取寫入幀資料
-//            writeSampleData(videoExtractor, mediaMuxer, writeVideoIndex, videoTrack);
-//            writeSampleData(audioExtractor, mediaMuxer, writeAudioIndex, audioTrack);
-//        } catch (IOException e) {
-//            Log.w(TAG, "combineMedia ex", e);
-//        } finally {
-//            try {
-//                if (mediaMuxer != null) {
-//                    mediaMuxer.stop();
-//                    mediaMuxer.release();
-//                }
-//                if (videoExtractor != null) {
-//                    videoExtractor.release();
-//                }
-//                if (audioExtractor != null) {
-//                    audioExtractor.release();
-//                }
-//            } catch (Exception e) {
-//                Log.w(TAG, "combineMedia release ex", e);
-//            }
-//        }
-//    }
+            int videoTrack = 0;
+            int audioTrack = 0;
+            // change to video or audio track 切換道視訊或音訊訊號的通道
+            videoExtractor.selectTrack(videoTrack);
+            MediaFormat videoFormat = videoExtractor.getTrackFormat(videoTrack);
+            audioExtractor.selectTrack(audioTrack);
+            MediaFormat audioFormat = audioExtractor.getTrackFormat(audioTrack);
 
 
 
 
-//    private void startRecording() {
-//        audioRecord = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, SAMPLING_RATE_IN_HZ,
-//                CHANNEL_CONFIG, AUDIO_FORMAT, bufferSize);
-//
-//        audioRecord.startRecording();
-//
-//        recordingInProgress.set(true);
-//
-//        recordingThread = new Thread(new RecordingRunnable(), "Recording Thread");
-//        recordingThread.start();
-//    }
+            //追蹤此通道
+            int writeVideoIndex = mediaMuxer.addTrack(videoFormat);
+            int writeAudioIndex = mediaMuxer.addTrack(audioFormat);
+            mediaMuxer.start();
+
+            // 讀取寫入幀資料
+            writeSampleData(videoExtractor, mediaMuxer, writeVideoIndex, videoTrack);
+            writeSampleData(audioExtractor, mediaMuxer, writeAudioIndex, audioTrack);
+        } catch (IOException e) {
+            Log.w(TAG, "combineMedia ex", e);
+        } finally {
+            try {
+                if (mediaMuxer != null) {
+                    mediaMuxer.stop();
+                    mediaMuxer.release();
+                }
+                if (videoExtractor != null) {
+                    videoExtractor.release();
+                }
+                if (audioExtractor != null) {
+                    audioExtractor.release();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "combineMedia release ex", e);
+            }
+        }
+    }
+
+
+    private void writeSampleData(MediaExtractor extractor,MediaMuxer mMuxer,int writeIndex, int track) {
+        boolean isFinish = false;
+        int frameCount = 0;
+        int offset = 100;
+        int sampleSize = 256*1024;
+        ByteBuffer buffer = ByteBuffer.allocate(sampleSize);
+        MediaCodec.BufferInfo bufferinfo = new MediaCodec.BufferInfo();
+
+        extractor.seekTo(0,MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+
+        while(!isFinish){
+            bufferinfo.offset = offset;
+            bufferinfo.size = extractor.readSampleData(buffer,offset);
+            if(bufferinfo.size < 0){
+                isFinish = true;
+                bufferinfo.size = 0;
+            }
+            bufferinfo.presentationTimeUs = extractor.getSampleTime();
+            bufferinfo.flags = extractor.getSampleFlags();
+            mMuxer.writeSampleData(track,buffer,bufferinfo);
+            extractor.advance();
+            frameCount++;
+        }
+        Log.d(TAG,"isFinish" +isFinish);
+
+    }
+
+
 
 //    private void stopRecording() {
 //        if (null == recorder) {
@@ -1024,75 +1375,14 @@ public class MainActivity extends ActionMenuActivity {
 
 
 
-
-//    private void startAudioRecord() {
-//        audioRecord =
-//                new AudioRecord(
-//                        MediaRecorder.AudioSource.DEFAULT,
-//                        SAMPLE_RATE,
-//                        AudioFormat.CHANNEL_IN_MONO,
-//                        AudioFormat.ENCODING_PCM_16BIT,
-//                        bufferSize);
-//
-////        audioRecord = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, SAMPLING_RATE_IN_HZ,
-////                CHANNEL_CONFIG, AUDIO_FORMAT, bufferSize);
-//
-//        audioRecord.startRecording();
-//
-//        recordingInProgress.set(true);
-//
-//        recordingThread = new Thread(new RecordingRunnable(), "Recording Thread");
-//        recordingThread.start();
-//    }
-
-    private class RecordingRunnable implements Runnable {
-
-        @Override
-        public void run() {
-            final File file = new File(Environment.getExternalStorageDirectory(), "recording.pcm");
-            final ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
-
-            try (final FileOutputStream outStream = new FileOutputStream(file)) {
-                while (recordingInProgress.get()) {
-                    int result = audioRecord.read(buffer, bufferSize);
-                    if (result < 0) {
-                        throw new RuntimeException("Reading of audio buffer failed: " +
-                                getBufferReadFailureReason(result));
-                    }
-                    outStream.write(buffer.array(), 0, bufferSize);
-                    buffer.clear();
-                }
-            } catch (IOException e) {
-                throw new RuntimeException("Writing of recorded audio failed", e);
-            }
-        }
-
-        private String getBufferReadFailureReason(int errorCode) {
-            switch (errorCode) {
-                case AudioRecord.ERROR_INVALID_OPERATION:
-                    return "ERROR_INVALID_OPERATION";
-                case AudioRecord.ERROR_BAD_VALUE:
-                    return "ERROR_BAD_VALUE";
-                case AudioRecord.ERROR_DEAD_OBJECT:
-                    return "ERROR_DEAD_OBJECT";
-                case AudioRecord.ERROR:
-                    return "ERROR";
-                default:
-                    return "Unknown (" + errorCode + ")";
-            }
-        }
-    }
-
     private void copyWaveFile(String inFilename,String outFilename){
         FileInputStream in = null;
-        FileOutputStream out = null;
+        FileOutputStream out;
         long totalAudioLen = 0;
         long totalDataLen;
         long longSampleRate = SAMPLE_RATE;
         int channels = 1;
         long byteRate = RECORDER_BPP * SAMPLE_RATE * channels/8;
-        Log.d("copyWaveFile inFileName",inFilename);
-        Log.d("copyWaveFile fileName",fileName);
 
         byte[] data = new byte[bufferSize];
 
@@ -1176,6 +1466,7 @@ public class MainActivity extends ActionMenuActivity {
 
         out.write(header, 0, 44);
     }
+
     private void startRecord() {
         try {
             setUpRecord();
@@ -1257,13 +1548,7 @@ public class MainActivity extends ActionMenuActivity {
     }
 
 
-    private void updatePreview() {
-        try {
-            mCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
+
 
     //setup camera
     private void openCamera() {
@@ -1290,10 +1575,24 @@ public class MainActivity extends ActionMenuActivity {
 
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             assert map != null;
-
+//            Log.d(TAG,characteristics.get(CameraCharacteristics.Key<SENSOR_INFO_ACTIVE_ARRAY_SIZE>));
+            cRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            mBottom = cRect.bottom;
+            mRight = cRect.right;
+            Log.d(TAG,"bottom: "+cRect.bottom+" left: "+cRect.left+" right: "+cRect.right+" top: "+cRect.top);
             imageDimension = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class), mTextureView.getWidth(), mTextureView.getHeight());
             imageReader = ImageReader.newInstance(imageDimension.getWidth(), imageDimension.getHeight(), ImageFormat.JPEG, 1);
             Log.d(TAG,"image dimension: "+imageDimension.getWidth()+"   "+imageDimension.getHeight());
+            Size[] previewSizes = map.getOutputSizes(SurfaceTexture.class);//获取预览尺寸
+            Size[] captureSizes = map.getOutputSizes(ImageFormat.JPEG);//获取拍照尺寸
+            for(Size i:previewSizes){
+                Log.d("previewSizes",i.getWidth()+ " "+i.getHeight());
+            }
+            for(Size i:captureSizes){
+                Log.d("captureSizes",i.getWidth()+ " "+i.getHeight());
+            }
+
+
             // Add permission for camera and let user grant the permission
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED &&
                     ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -1344,8 +1643,11 @@ public class MainActivity extends ActionMenuActivity {
     }
 
     private void startSensor() {
-        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER), SensorManager.SENSOR_DELAY_NORMAL);
-        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE), SensorManager.SENSOR_DELAY_NORMAL);
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER), SensorManager.SENSOR_DELAY_FASTEST);
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE), SensorManager.SENSOR_DELAY_FASTEST);
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD), SensorManager.SENSOR_DELAY_FASTEST);
+        sensorManager.registerListener(sensorEventListener, sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY), SensorManager.SENSOR_DELAY_FASTEST);
+
     }
 
     private void stopSensor() {
@@ -1376,12 +1678,36 @@ public class MainActivity extends ActionMenuActivity {
         for (Size option : choices) {
             if (option.getHeight() == option.getWidth() * height / width && option.getWidth() >= width && option.getHeight() >= height) {
                 bigEnough.add(option);
+//                Log.d("chooseOptimalSize",option.getWidth() + "  "+ option.getHeight());
             }
         }
         if (bigEnough.size() > 0) {
             return Collections.min(bigEnough, new CompareSizeByArea());
         } else {
             return choices[0];
+        }
+    }
+
+    @Override
+    public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
+        //first cancel discovery because its very memory intensive.
+        bluetoothAdapter.cancelDiscovery();
+
+        Log.d(TAG, "onItemClick: You Clicked on a device.");
+        String deviceName = mBTDevices.get(i).getName();
+        String deviceAddress = mBTDevices.get(i).getAddress();
+
+        Log.d(TAG, "onItemClick: deviceName = " + deviceName);
+        Log.d(TAG, "onItemClick: deviceAddress = " + deviceAddress);
+
+        //create the bond.
+        //NOTE: Requires API 17+? I think this is JellyBean
+        if(Build.VERSION.SDK_INT > Build.VERSION_CODES.JELLY_BEAN_MR2){
+            Log.d(TAG, "Trying to pair with " + deviceName);
+            mBTDevices.get(i).createBond();
+
+            mBTDevice = mBTDevices.get(i);
+            mBluetoothConnection = new BluetoothConnectionService(MainActivity.this);
         }
     }
 
@@ -1517,5 +1843,15 @@ public class MainActivity extends ActionMenuActivity {
         stopSensor();
         stopBackgroundThread();
         super.onPause();
+    }
+    @Override
+    protected void onDestroy() {
+        Log.d(TAG, "onDestroy: called.");
+        super.onDestroy();
+//        unregisterReceiver(mBroadcastReceiver1);
+//        unregisterReceiver(mBroadcastReceiver2);
+//        unregisterReceiver(mBroadcastReceiver3);
+//        unregisterReceiver(mBroadcastReceiver4);
+        //mBluetoothAdapter.cancelDiscovery();
     }
 }
